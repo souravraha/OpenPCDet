@@ -1,0 +1,12 @@
+name: open3d
+channels:
+  - defaults
+dependencies:
+  - python
+  - open3d
+  - cudatoolkit=11.6
+  - torchvision
+  - pytorch
+  - torchaudio
+  - tensorboard
+prefix: /home/souraviai/miniconda3/envs/open3d
