@@ -5,6 +5,8 @@ import torch
 import tqdm
 import time
 from torch.nn.utils import clip_grad_norm_
+from torch.profiler import profile, record_function, ProfilerActivity, schedule
+
 from pcdet.utils import common_utils, commu_utils
 
 
@@ -123,6 +125,10 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         pbar.close()
     return accumulated_iter
 
+def trace_handler(p):
+    output = p.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
+    print(output)
+    p.export_chrome_trace("/tmp/trace_" + str(p.step_num) + ".json")
 
 def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_cfg,
                 start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
@@ -137,31 +143,46 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
             train_loader.dataset.merge_all_iters_to_one_epoch(merge=True, epochs=total_epochs)
             total_it_each_epoch = len(train_loader) // max(total_epochs, 1)
 
-        dataloader_iter = iter(train_loader)
-        for cur_epoch in tbar:
-            if train_sampler is not None:
-                train_sampler.set_epoch(cur_epoch)
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=schedule(
+                wait=int(0.1 * total_it_each_epoch),
+                warmup=int(0.1 * total_it_each_epoch),
+                active=int(0.3 * total_it_each_epoch),
+                repeat=2,
+            ),
+            on_trace_ready=trace_handler,
+            # record_shapes=True,
+            profile_memory=True,
+            # with_stack=True,
+            with_flops=True,
+        ) as prof:
+            dataloader_iter = iter(train_loader)
+            for cur_epoch in tbar:
+                if train_sampler is not None:
+                    train_sampler.set_epoch(cur_epoch)
 
-            # train one epoch
-            if lr_warmup_scheduler is not None and cur_epoch < optim_cfg.WARMUP_EPOCH:
-                cur_scheduler = lr_warmup_scheduler
-            else:
-                cur_scheduler = lr_scheduler
-            accumulated_iter = train_one_epoch(
-                model, optimizer, train_loader, model_func,
-                lr_scheduler=cur_scheduler,
-                accumulated_iter=accumulated_iter, optim_cfg=optim_cfg,
-                rank=rank, tbar=tbar, tb_log=tb_log,
-                leave_pbar=(cur_epoch + 1 == total_epochs),
-                total_it_each_epoch=total_it_each_epoch,
-                dataloader_iter=dataloader_iter, 
-                
-                cur_epoch=cur_epoch, total_epochs=total_epochs,
-                use_logger_to_record=use_logger_to_record, 
-                logger=logger, logger_iter_interval=logger_iter_interval,
-                ckpt_save_dir=ckpt_save_dir, ckpt_save_time_interval=ckpt_save_time_interval, 
-                show_gpu_stat=show_gpu_stat
-            )
+                # train one epoch
+                if lr_warmup_scheduler is not None and cur_epoch < optim_cfg.WARMUP_EPOCH:
+                    cur_scheduler = lr_warmup_scheduler
+                else:
+                    cur_scheduler = lr_scheduler
+                accumulated_iter = train_one_epoch(
+                    model, optimizer, train_loader, model_func,
+                    lr_scheduler=cur_scheduler,
+                    accumulated_iter=accumulated_iter, optim_cfg=optim_cfg,
+                    rank=rank, tbar=tbar, tb_log=tb_log,
+                    leave_pbar=(cur_epoch + 1 == total_epochs),
+                    total_it_each_epoch=total_it_each_epoch,
+                    dataloader_iter=dataloader_iter, 
+                    
+                    cur_epoch=cur_epoch, total_epochs=total_epochs,
+                    use_logger_to_record=use_logger_to_record, 
+                    logger=logger, logger_iter_interval=logger_iter_interval,
+                    ckpt_save_dir=ckpt_save_dir, ckpt_save_time_interval=ckpt_save_time_interval, 
+                    show_gpu_stat=show_gpu_stat
+                )
+                prof.step()
 
             # save trained model
             trained_epoch = cur_epoch + 1
