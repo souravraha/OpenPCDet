@@ -27,7 +27,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         forward_time = common_utils.AverageMeter()
 
     def trace_handler(p):
-        output = p.key_averages().table(sort_by="self_cuda_time_total", row_limit=-1)
+        output = p.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
         logger.info(output)
         p.export_chrome_trace(os.path.abspath(ckpt_save_dir, os.pardir) + "/trace_" + str(p.step_num) + ".json")
 
