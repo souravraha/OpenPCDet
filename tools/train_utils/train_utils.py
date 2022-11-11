@@ -29,7 +29,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
     def trace_handler(p):
         output = p.key_averages().table(sort_by="cuda_time_total", row_limit=10)
         logger.info(output)
-        p.export_chrome_trace(os.path.abspath(ckpt_save_dir, os.pardir) + "/trace_" + str(p.step_num) + ".json")
+        p.export_chrome_trace(os.path.abspath(os.path.join(ckpt_save_dir, os.pardir)) + "/trace_" + str(p.step_num) + ".json")
 
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
