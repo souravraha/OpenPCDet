@@ -34,9 +34,9 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
         schedule=schedule(
-            wait=int(0.1 * total_it_each_epoch),
-            warmup=int(0.05 * total_it_each_epoch),
-            active=int(0.3 * total_it_each_epoch),
+            wait=int(0.01 * total_it_each_epoch),
+            warmup=int(0.01 * total_it_each_epoch),
+            active=int(0.01 * total_it_each_epoch),
             repeat=2,
         ),
         on_trace_ready=trace_handler,
