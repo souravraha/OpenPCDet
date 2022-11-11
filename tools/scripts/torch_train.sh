@@ -14,5 +14,6 @@ do
 done
 echo $PORT
 
+export NCCL_DEBUG=INFO
 torchrun --nproc_per_node=${NGPUS} --rdzv_endpoint=localhost:${PORT} train.py --launcher pytorch ${PY_ARGS}
 
