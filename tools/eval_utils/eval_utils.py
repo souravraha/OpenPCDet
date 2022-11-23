@@ -8,6 +8,9 @@ import tqdm
 from pcdet.models import load_data_to_gpu
 from pcdet.utils import common_utils
 
+# Print GFLOPs and Params of model
+from thop import profile
+
 
 def statistics_info(cfg, ret_dict, metric, disp_dict):
     for cur_thresh in cfg.MODEL.POST_PROCESSING.RECALL_THRESH_LIST:
@@ -53,6 +56,10 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     start_time = time.time()
     for i, batch_dict in enumerate(dataloader):
         load_data_to_gpu(batch_dict)
+        # Print params and GFLOPs in model
+        if i == 0:
+            macs, params = profile(model, inputs=(batch_dict,))
+            print("Model PARAMS:  , Model G-FLOPS: ", params, "\t", macs/batch_dict['batch_size'])
         with torch.no_grad():
             pred_dicts, ret_dict = model(batch_dict)
         disp_dict = {}
