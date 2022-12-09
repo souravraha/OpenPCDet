@@ -17,6 +17,17 @@ from pcdet.models import build_network
 from pcdet.utils import common_utils
 
 
+# Set torch seeds
+manualSeed = 0
+torch.manual_seed(manualSeed)
+# if using GPU
+torch.cuda.manual_seed(manualSeed)
+torch.cuda.manual_seed_all(manualSeed)
+torch.backends.cudnn.enabled = False
+torch.backends.cudnn.benchmark = False
+torch.backends.cudnn.deterministic = True
+
+
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
     parser.add_argument('--cfg_file', type=str, default=None, help='specify the config for training')
