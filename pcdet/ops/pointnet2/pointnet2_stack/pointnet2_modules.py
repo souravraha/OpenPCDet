@@ -12,6 +12,24 @@ In this file, we introduce three new modules to help with gating, deformation an
 These are StackSAModuleMSGGated, StackSAModuleMSGAdapt and StackSAModuleMSGDecode.
 """
 
+def build_local_aggregation_module(input_channels, config):
+    local_aggregation_name = config.get('NAME', 'StackSAModuleMSG')
+
+    if local_aggregation_name == 'StackSAModuleMSG':
+        mlps = config.MLPS
+        for k in range(len(mlps)):
+            mlps[k] = [input_channels] + mlps[k]
+        cur_layer = StackSAModuleMSG(
+            radii=config.POOL_RADIUS, nsamples=config.NSAMPLE, mlps=mlps, use_xyz=True, pool_method='max_pool',
+        )
+        num_c_out = sum([x[-1] for x in mlps])
+    elif local_aggregation_name == 'VectorPoolAggregationModuleMSG':
+        cur_layer = VectorPoolAggregationModuleMSG(input_channels=input_channels, config=config)
+        num_c_out = config.MSG_POST_MLPS[-1]
+    else:
+        raise NotImplementedError
+
+    return cur_layer, num_c_out
 
 class StackSAModuleMSG(nn.Module):
     def __init__(self, *, radii: List[float], nsamples: List[int], mlps: List[List[int]],
