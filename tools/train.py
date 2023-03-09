@@ -154,7 +154,12 @@ def main():
     model.train()  # before wrap to DistributedDataParallel to support fixed some parameters
     if dist_train:
         model = nn.parallel.DistributedDataParallel(model, device_ids=[cfg.LOCAL_RANK % torch.cuda.device_count()])
-    logger.info(model)
+    try:
+        from torchinfo import summary
+
+        logger.info(summary(model, input_data=[next(iter(train_loader))], mode="train"))
+    except:
+        logger.info(model)
 
     lr_scheduler, lr_warmup_scheduler = build_scheduler(
         optimizer, total_iters_each_epoch=len(train_loader), total_epochs=args.epochs,
