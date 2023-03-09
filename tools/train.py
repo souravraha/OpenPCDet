@@ -5,6 +5,7 @@ import glob
 import os
 from pathlib import Path
 from test import repeat_eval_ckpt
+from torchinfo import summary
 
 import torch
 import torch.nn as nn
@@ -161,7 +162,8 @@ def main():
     if dist_train:
         model = nn.parallel.DistributedDataParallel(model, device_ids=[cfg.LOCAL_RANK % torch.cuda.device_count()])
     logger.info(f'----------- Model {cfg.MODEL.NAME} created, param count: {sum([m.numel() for m in model.parameters()])} -----------')
-    logger.info(model)
+    # logger.info(model)
+    logger.info(summary(model, input_data=next(iter(train_loader))))
 
     lr_scheduler, lr_warmup_scheduler = build_scheduler(
         optimizer, total_iters_each_epoch=len(train_loader), total_epochs=args.epochs,
