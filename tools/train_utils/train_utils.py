@@ -5,7 +5,7 @@ import tqdm
 import time
 import glob
 from torch.nn.utils import clip_grad_norm_
-from torch.profiler import profile, record_function, ProfilerActivity, schedule
+from torch.profiler import profile, record_function, ProfilerActivity, schedule, tensorboard_trace_handler
 
 from pcdet.utils import common_utils, commu_utils
 
@@ -42,6 +42,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
             repeat=2,
         ),
         on_trace_ready=trace_handler,
+        # on_trace_ready=tensorboard_trace_handler(os.path.abspath(os.path.join(ckpt_save_dir, os.pardir))),
         # record_shapes=True,
         profile_memory=True,
         # with_stack=True,
