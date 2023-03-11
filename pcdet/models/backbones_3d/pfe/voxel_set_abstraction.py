@@ -349,14 +349,14 @@ class VoxelSetAbstraction(nn.Module):
             point_coords: (N, 4)
 
         """
-        keypoints = self.get_sampled_points(batch_dict)
+        keypoints = self.get_sampled_points(batch_dict) # (N, 4)
 
         point_features_list = []
         if 'bev' in self.model_cfg.FEATURES_SOURCE:
             point_bev_features = self.interpolate_from_bev_features(
                 keypoints, batch_dict['spatial_features'], batch_dict['batch_size'],
                 bev_stride=batch_dict['spatial_features_stride']
-            )
+            )   # (N, c)
             point_features_list.append(point_bev_features)
 
         batch_size = batch_dict['batch_size']
@@ -378,7 +378,7 @@ class VoxelSetAbstraction(nn.Module):
                 filter_neighbors_with_roi=self.model_cfg.SA_LAYER['raw_points'].get('FILTER_NEIGHBOR_WITH_ROI', False),
                 radius_of_neighbor=self.model_cfg.SA_LAYER['raw_points'].get('RADIUS_OF_NEIGHBOR_WITH_ROI', None),
                 rois=batch_dict.get('rois', None)
-            )
+            )   # (N, 32)
             point_features_list.append(pooled_features)
 
         for k, src_name in enumerate(self.SA_layer_names):
@@ -397,15 +397,15 @@ class VoxelSetAbstraction(nn.Module):
                 filter_neighbors_with_roi=self.model_cfg.SA_LAYER[src_name].get('FILTER_NEIGHBOR_WITH_ROI', False),
                 radius_of_neighbor=self.model_cfg.SA_LAYER[src_name].get('RADIUS_OF_NEIGHBOR_WITH_ROI', None),
                 rois=batch_dict.get('rois', None)
-            )
+            )   # (N, 128)
 
             point_features_list.append(pooled_features)
 
-        point_features = torch.cat(point_features_list, dim=-1)
+        point_features = torch.cat(point_features_list, dim=-1)  # (N, 544)
 
         batch_dict['point_features_before_fusion'] = point_features.view(-1, point_features.shape[-1])
         point_features = self.vsa_point_feature_fusion(point_features.view(-1, point_features.shape[-1]))
 
-        batch_dict['point_features'] = point_features  # (BxN, C)
+        batch_dict['point_features'] = point_features  # (BxN, C) C=90
         batch_dict['point_coords'] = keypoints  # (BxN, 4)
         return batch_dict

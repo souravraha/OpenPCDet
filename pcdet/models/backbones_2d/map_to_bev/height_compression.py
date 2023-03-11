@@ -11,10 +11,10 @@ class HeightCompression(nn.Module):
         """
         Args:
             batch_dict:
-                encoded_spconv_tensor: sparse tensor
+                encoded_spconv_tensor: (N, C) (D, H, W) sparse tensor output of VoxelBackBone8x
         Returns:
             batch_dict:
-                spatial_features:
+                spatial_features: (N, C * D, H, W)
 
         """
         encoded_spconv_tensor = batch_dict['encoded_spconv_tensor']
@@ -22,5 +22,5 @@ class HeightCompression(nn.Module):
         N, C, D, H, W = spatial_features.shape
         spatial_features = spatial_features.view(N, C * D, H, W)
         batch_dict['spatial_features'] = spatial_features
-        batch_dict['spatial_features_stride'] = batch_dict['encoded_spconv_tensor_stride']
+        batch_dict['spatial_features_stride'] = batch_dict['encoded_spconv_tensor_stride'] #from VoxelBackBonr8x
         return batch_dict

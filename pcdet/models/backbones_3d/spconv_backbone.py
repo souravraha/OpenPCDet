@@ -130,11 +130,16 @@ class VoxelBackBone8x(nn.Module):
         Args:
             batch_dict:
                 batch_size: int
-                vfe_features: (num_voxels, C)
+                voxel_features: (num_voxels, C) computed in vfe
                 voxel_coords: (num_voxels, 4), [batch_idx, z_idx, y_idx, x_idx]
         Returns:
-            batch_dict:
-                encoded_spconv_tensor: sparse tensor
+            batch_dict: sparseconvtensor with the following feature shapes and spatial shapes
+                encoded_spconv_tensor: (, 128), (self.sparse_shape / 16)
+                multi_scale_3d_features:
+                    x_conv1 (num_voxels, 16), (self.sparse_shape) [z_idx, y_idx, x_idx]
+                    x_conv2 (, 32), (self.sparse_shape / 2)
+                    x_conv3 (, 64), (self.sparse_shape / 4)
+                    x_conv4 (, 64), (self.sparse_shape / 8)
         """
         voxel_features, voxel_coords = batch_dict['voxel_features'], batch_dict['voxel_coords']
         batch_size = batch_dict['batch_size']
