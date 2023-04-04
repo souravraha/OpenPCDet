@@ -157,7 +157,8 @@ def main():
     try:
         from torchinfo import summary
 
-        logger.info(summary(model, input_data=[next(iter(train_loader))], mode="train"))
+        tmp = summary(model, input_data=[next(iter(train_loader))], mode="train")
+        logger.info(tmp)
     except:
         logger.info(model)
 
