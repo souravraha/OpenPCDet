@@ -10,7 +10,13 @@ class PVRCNNPlusPlus(Detector3DTemplate):
         batch_dict = self.vfe(batch_dict)
         batch_dict = self.backbone_3d(batch_dict)
         batch_dict = self.map_to_bev_module(batch_dict)
-        batch_dict = self.backbone_2d(batch_dict)
+        try:
+            batch_dict = self.backbone_2d(batch_dict)
+        except TypeError:
+            batch_dict = self.encoder_2d_module(batch_dict)
+            batch_dict = self.cfe(batch_dict)
+            batch_dict = self.decoder_2d_module(batch_dict)
+
         batch_dict = self.dense_head(batch_dict)
 
         batch_dict = self.roi_head.proposal_layer(
