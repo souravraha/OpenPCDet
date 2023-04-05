@@ -322,6 +322,10 @@ class CenterHead(nn.Module):
         return rois, roi_scores, roi_labels
 
     def forward(self, data_dict):
+        '''
+        Args:
+            data_dict
+        '''
         spatial_features_2d = data_dict['spatial_features_2d']
         x = self.shared_conv(spatial_features_2d)
 
