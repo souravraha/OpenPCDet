@@ -196,7 +196,7 @@ class StackFarthestPointSampling(Function):
             ctx:
             xyz: (N1 + N2 + ..., 3) where N > npoint
             xyz_batch_cnt: [N1, N2, ...]
-            npoint: int, number of features in the sampled set
+            npoint: (M1, M2, ...) number of features in the sampled set
 
         Returns:
             output: (npoint.sum()) tensor containing the set,
