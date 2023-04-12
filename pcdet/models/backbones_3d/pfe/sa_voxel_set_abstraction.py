@@ -123,7 +123,7 @@ def sector_fps(points, num_sampled_points, num_sectors):
 
     def extend_with_minimal_repetitions(tensor, desired_length):
         repetitions = max(1, desired_length // tensor.size(0))
-        repeated_tensor = tensor.repeat(repetitions, 1)
+        repeated_tensor = tensor.repeat([repetitions] + [1] * (tensor.ndim - 1))
         extra_tensor = tensor[:(desired_length - repeated_tensor.size(0))]
         return torch.cat((repeated_tensor, extra_tensor))
     
