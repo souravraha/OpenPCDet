@@ -96,7 +96,7 @@ def sector_fps(points, num_sampled_points, num_sectors):
             xyz_batch_cnt.append(cur_num_points)
             ratio = cur_num_points / points.shape[0]
             num_sampled_points_list.append(
-                min(cur_num_points, math.ceil(ratio * num_sampled_points))
+                min(cur_num_points, int(ratio * num_sampled_points))
             )
 
     if len(xyz_batch_cnt) == 0:
@@ -115,7 +115,14 @@ def sector_fps(points, num_sampled_points, num_sectors):
 
     sampled_points = xyz[sampled_pt_idxs]
 
-    return sampled_points
+    def extend_with_minimal_repetitions(tensor, desired_length):
+        repetitions = max(1, desired_length // tensor.size(0))
+        repeated_tensor = tensor.repeat([repetitions] + [1] * (tensor.ndim - 1))
+        extra_tensor = tensor[:(desired_length - repeated_tensor.size(0))]
+        return torch.cat((repeated_tensor, extra_tensor))
+    
+    return extend_with_minimal_repetitions(sampled_points, num_sampled_points)
+
 
 class DefVoxelSetAbstraction(nn.Module):
     def __init__(self, model_cfg, voxel_size, point_cloud_range, num_bev_features=None,
@@ -131,8 +138,9 @@ class DefVoxelSetAbstraction(nn.Module):
         self.SA_layer_names = []
         self.downsample_times_map = {}
         c_in = 0
+
         for src_name in self.model_cfg.FEATURES_SOURCE:
-            if src_name in ['bev', 'raw_points']:
+            if src_name in ['bev', 'raw_points', ]:
                 continue
             self.downsample_times_map[src_name] = SA_cfg[src_name].DOWNSAMPLE_FACTOR
             mlps = SA_cfg[src_name].MLPS
@@ -227,6 +235,27 @@ class DefVoxelSetAbstraction(nn.Module):
         point_bev_features = torch.cat(point_bev_features_list, dim=0)  # (B, N, C0)
         return point_bev_features
 
+    def sectorized_proposal_centric_sampling(self, roi_boxes, points):
+        """
+        Args:
+            roi_boxes: (M, 7 + C)
+            points: (N, 3)
+
+        Returns:
+            sampled_points: (N_out, 3)
+        """
+
+        sampled_points, _ = sample_points_with_roi(
+            rois=roi_boxes, points=points,
+            sample_radius_with_roi=self.model_cfg.SPC_SAMPLING.SAMPLE_RADIUS_WITH_ROI,
+            num_max_points_of_part=self.model_cfg.SPC_SAMPLING.get('NUM_POINTS_OF_EACH_SAMPLE_PART', 200000)
+        )
+        sampled_points = sector_fps(
+            points=sampled_points, num_sampled_points=self.model_cfg.NUM_KEYPOINTS,
+            num_sectors=self.model_cfg.SPC_SAMPLING.NUM_SECTORS
+        )
+        return sampled_points
+
     def get_sampled_points(self, batch_dict):
         batch_size = batch_dict['batch_size']
         if self.model_cfg.POINT_SOURCE == 'raw_points':
@@ -262,6 +291,57 @@ class DefVoxelSetAbstraction(nn.Module):
             keypoints_list.append(keypoints)
         keypoints = torch.cat(keypoints_list, dim=0)  # (B, M, 3)
         return keypoints
+
+    @staticmethod
+    def aggregate_keypoint_features_from_one_source(
+            batch_size, aggregate_func, xyz, xyz_features, xyz_bs_idxs, new_xyz, new_xyz_batch_cnt,
+            filter_neighbors_with_roi=False, radius_of_neighbor=None, num_max_points_of_part=200000, rois=None
+    ):
+        """
+
+        Args:
+            aggregate_func:
+            xyz: (N, 3)
+            xyz_features: (N, C)
+            xyz_bs_idxs: (N)
+            new_xyz: (M, 3)
+            new_xyz_batch_cnt: (batch_size), [N1, N2, ...]
+
+            filter_neighbors_with_roi: True/False
+            radius_of_neighbor: float
+            num_max_points_of_part: int
+            rois: (batch_size, num_rois, 7 + C)
+        Returns:
+
+        """
+        xyz_batch_cnt = xyz.new_zeros(batch_size).int()
+        if filter_neighbors_with_roi:
+            point_features = torch.cat((xyz, xyz_features), dim=-1) if xyz_features is not None else xyz
+            point_features_list = []
+            for bs_idx in range(batch_size):
+                bs_mask = (xyz_bs_idxs == bs_idx)
+                _, valid_mask = sample_points_with_roi(
+                    rois=rois[bs_idx], points=xyz[bs_mask],
+                    sample_radius_with_roi=radius_of_neighbor, num_max_points_of_part=num_max_points_of_part,
+                )
+                point_features_list.append(point_features[bs_mask][valid_mask])
+                xyz_batch_cnt[bs_idx] = valid_mask.sum()
+
+            valid_point_features = torch.cat(point_features_list, dim=0)
+            xyz = valid_point_features[:, 0:3]
+            xyz_features = valid_point_features[:, 3:] if xyz_features is not None else None
+        else:
+            for bs_idx in range(batch_size):
+                xyz_batch_cnt[bs_idx] = (xyz_bs_idxs == bs_idx).sum()
+
+        pooled_points, pooled_features = aggregate_func(
+            xyz=xyz.contiguous(),
+            xyz_batch_cnt=xyz_batch_cnt,
+            new_xyz=new_xyz,
+            new_xyz_batch_cnt=new_xyz_batch_cnt,
+            features=xyz_features.contiguous(),
+        )
+        return pooled_features
 
     def forward(self, batch_dict):
         """
