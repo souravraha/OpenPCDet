@@ -1,9 +1,14 @@
+import math
+import numpy as np
 import torch
 import torch.nn as nn
-from ....utils import common_utils
+import torch.nn.functional as F
+
+from pcdet.models.backbones_3d.sa_block import SA_block
+
 from ....ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ....ops.pointnet2.pointnet2_stack import pointnet2_utils as pointnet2_stack_utils
-from pcdet.models.backbones_3d.sa_block import SA_block
+from ....utils import common_utils
 
 
 def bilinear_interpolate_torch(im, x, y):
@@ -38,6 +43,7 @@ def bilinear_interpolate_torch(im, x, y):
     wd = (x - x0.type_as(x)) * (y - y0.type_as(y))
     ans = torch.t((torch.t(Ia) * wa)) + torch.t(torch.t(Ib) * wb) + torch.t(torch.t(Ic) * wc) + torch.t(torch.t(Id) * wd)
     return ans
+
 
 def sample_points_with_roi(rois, points, sample_radius_with_roi, num_max_points_of_part=200000):
     """
@@ -143,50 +149,31 @@ class DefVoxelSetAbstraction(nn.Module):
             if src_name in ['bev', 'raw_points', ]:
                 continue
             self.downsample_times_map[src_name] = SA_cfg[src_name].DOWNSAMPLE_FACTOR
-            mlps = SA_cfg[src_name].MLPS
-            for k in range(len(mlps)):
-                mlps[k] = [mlps[k][0]] + mlps[k]
 
-            if src_name in self.model_cfg.FEATURES_SOURCE:
-            # Deform keypoints adaptively
-                cur_layer = pointnet2_stack_modules.StackSAModuleMSGAdapt(
-                radii=SA_cfg[src_name].POOL_RADIUS,
-                deform_radii=SA_cfg[src_name].POOL_RADIUS,
-                nsamples=SA_cfg[src_name].NSAMPLE,
-                mlps=mlps,
-                use_xyz=True,
-                pool_method='max_pool',
-                )
+            if SA_cfg[src_name].get('INPUT_CHANNELS', None) is None:
+                input_channels = SA_cfg[src_name].MLPS[0][0] \
+                    if isinstance(SA_cfg[src_name].MLPS[0], list) else SA_cfg[src_name].MLPS[0]
             else:
-                cur_layer = pointnet2_stack_modules.StackSAModuleMSG(
-                radii=SA_cfg[src_name].POOL_RADIUS,
-                nsamples=SA_cfg[src_name].NSAMPLE,
-                mlps=mlps,
-                use_xyz=True,
-                pool_method='max_pool',
-                )
+                input_channels = SA_cfg[src_name]['INPUT_CHANNELS']
 
+            cur_layer, cur_num_c_out = pointnet2_stack_modules.build_local_aggregation_module(
+                input_channels=input_channels, config=SA_cfg[src_name], pc_range=self.point_cloud_range,
+            )
             self.SA_layers.append(cur_layer)
             self.SA_layer_names.append(src_name)
 
-            c_in += sum([x[-1] for x in mlps])
+            c_in += cur_num_c_out
 
         if 'bev' in self.model_cfg.FEATURES_SOURCE:
             c_bev = num_bev_features
             c_in += c_bev
 
         if 'raw_points' in self.model_cfg.FEATURES_SOURCE:
-            mlps = SA_cfg['raw_points'].MLPS
-            for k in range(len(mlps)):
-                mlps[k] = [num_rawpoint_features - 3] + mlps[k]
-            self.SA_rawpoints = pointnet2_stack_modules.StackSAModuleMSGGated(
-                radii=SA_cfg['raw_points'].POOL_RADIUS,
-                nsamples=SA_cfg['raw_points'].NSAMPLE,
-                mlps=mlps,
-                use_xyz=True,
-                pool_method='max_pool'
+            self.SA_rawpoints, cur_num_c_out = pointnet2_stack_modules.build_local_aggregation_module(
+                input_channels=num_rawpoint_features - 3, config=SA_cfg['raw_points'], pc_range=self.point_cloud_range,
             )
-            c_in += sum([x[-1] for x in mlps])
+
+            c_in += cur_num_c_out
 
         self.vsa_point_feature_fusion = nn.Sequential(
             nn.Linear(c_in, self.model_cfg.NUM_OUTPUT_FEATURES, bias=False),
@@ -211,15 +198,27 @@ class DefVoxelSetAbstraction(nn.Module):
         self.layer_norm2 = nn.LayerNorm(in_dim)
 
     def interpolate_from_bev_features(self, keypoints, bev_features, batch_size, bev_stride):
-        x_idxs = (keypoints[:, :, 0] - self.point_cloud_range[0]) / self.voxel_size[0]
-        y_idxs = (keypoints[:, :, 1] - self.point_cloud_range[1]) / self.voxel_size[1]
+        """
+        Args:
+            keypoints: (N1 + N2 + ..., 4)
+            bev_features: (B, C, H, W)
+            batch_size:
+            bev_stride:
+
+        Returns:
+            point_bev_features: (N1 + N2 + ..., C)
+        """
+        x_idxs = (keypoints[:, 1] - self.point_cloud_range[0]) / self.voxel_size[0]
+        y_idxs = (keypoints[:, 2] - self.point_cloud_range[1]) / self.voxel_size[1]
+
         x_idxs = x_idxs / bev_stride
         y_idxs = y_idxs / bev_stride
-
         point_bev_features_list = []
         for k in range(batch_size):
-            cur_x_idxs = x_idxs[k]
-            cur_y_idxs = y_idxs[k]
+            bs_mask = (keypoints[:, 0] == k)
+
+            cur_x_idxs = x_idxs[bs_mask]
+            cur_y_idxs = y_idxs[bs_mask]
             cur_bev_features = bev_features[k].permute(1, 2, 0)  # (H, W, C)
             point_bev_features = bilinear_interpolate_torch(cur_bev_features, cur_x_idxs, cur_y_idxs)
             offsets = self.pred_bev_offset(point_bev_features.unsqueeze(0).permute(0, 2, 1)).permute(0, 2, 1).contiguous().squeeze(0)
@@ -257,6 +256,17 @@ class DefVoxelSetAbstraction(nn.Module):
         return sampled_points
 
     def get_sampled_points(self, batch_dict):
+        """
+        Uses:
+            batch_dict
+                'batch_size': int,
+                'points': [N, 5],
+                'voxel_coords': [M, 4],
+                'rois': [B, F, 7],
+
+        Returns:
+            keypoints: (N1 + N2 + ..., 4), where 4 indicates [bs_idx, x, y, z]
+        """
         batch_size = batch_dict['batch_size']
         if self.model_cfg.POINT_SOURCE == 'raw_points':
             src_points = batch_dict['points'][:, 1:4]
@@ -274,22 +284,35 @@ class DefVoxelSetAbstraction(nn.Module):
         keypoints_list = []
         for bs_idx in range(batch_size):
             bs_mask = (batch_indices == bs_idx)
-            sampled_points = src_points[bs_mask].unsqueeze(dim=0)  # (1, N, 3)
+            sampled_points = src_points[bs_mask].unsqueeze(dim=0)  # (1, N, 3) where N is the number of points with batch index == bs_idx
             if self.model_cfg.SAMPLE_METHOD == 'FPS':
-                cur_pt_idxs = pointnet2_stack_utils.furthest_point_sample(
+                cur_pt_idxs = pointnet2_stack_utils.farthest_point_sample(
                     sampled_points[:, :, 0:3].contiguous(), self.model_cfg.NUM_KEYPOINTS
                 ).long()
+
                 if sampled_points.shape[1] < self.model_cfg.NUM_KEYPOINTS:
-                    empty_num = self.model_cfg.NUM_KEYPOINTS - sampled_points.shape[1]
-                    cur_pt_idxs[0, -empty_num:] = cur_pt_idxs[0, :empty_num]
+                    times = int(self.model_cfg.NUM_KEYPOINTS / sampled_points.shape[1]) + 1
+                    non_empty = cur_pt_idxs[0, :sampled_points.shape[1]]
+                    cur_pt_idxs[0] = non_empty.repeat(times)[:self.model_cfg.NUM_KEYPOINTS]
+
                 keypoints = sampled_points[0][cur_pt_idxs[0]].unsqueeze(dim=0)
 
-            elif self.model_cfg.SAMPLE_METHOD == 'FastFPS':
-                raise NotImplementedError
+            elif self.model_cfg.SAMPLE_METHOD == 'SPC':
+                cur_keypoints = self.sectorized_proposal_centric_sampling(
+                    roi_boxes=batch_dict['rois'][bs_idx], points=sampled_points[0]
+                )
+                bs_idxs = cur_keypoints.new_ones(cur_keypoints.shape[0]) * bs_idx
+                keypoints = torch.cat((bs_idxs[:, None], cur_keypoints), dim=1)
             else:
                 raise NotImplementedError
+
             keypoints_list.append(keypoints)
-        keypoints = torch.cat(keypoints_list, dim=0)  # (B, M, 3)
+
+        keypoints = torch.cat(keypoints_list, dim=0)  # (B, M, 3) or (N1 + N2 + ..., 4)
+        if len(keypoints.shape) == 3:
+            batch_idx = torch.arange(batch_size, device=keypoints.device).view(-1, 1).repeat(1, keypoints.shape[1]).view(-1, 1)
+            keypoints = torch.cat((batch_idx.float(), keypoints.view(-1, 3)), dim=1)
+
         return keypoints
 
     @staticmethod
@@ -371,63 +394,58 @@ class DefVoxelSetAbstraction(nn.Module):
             )
             point_features_list.append(point_bev_features)
 
-        batch_size, num_keypoints, _ = keypoints.shape
-        new_xyz = keypoints.view(-1, 3)
-        new_xyz_batch_cnt = new_xyz.new_zeros(batch_size).int().fill_(num_keypoints)
+        batch_size = batch_dict['batch_size']
+
+        new_xyz = keypoints[:, 1:4].contiguous()
+        new_xyz_batch_cnt = new_xyz.new_zeros(batch_size).int()
+        for k in range(batch_size):
+            new_xyz_batch_cnt[k] = (keypoints[:, 0] == k).sum()
 
         if 'raw_points' in self.model_cfg.FEATURES_SOURCE:
             raw_points = batch_dict['points']
-            xyz = raw_points[:, 1:4]
-            xyz_batch_cnt = xyz.new_zeros(batch_size).int()
-            for bs_idx in range(batch_size):
-                xyz_batch_cnt[bs_idx] = (raw_points[:, 0] == bs_idx).sum()
 
-            pooled_points, pooled_features = self.SA_rawpoints(
-                xyz=xyz.contiguous(),
-                xyz_batch_cnt=xyz_batch_cnt,
-                new_xyz=new_xyz,
-                new_xyz_batch_cnt=new_xyz_batch_cnt,
-                features=raw_points[:, 1:5],
+            pooled_features = self.aggregate_keypoint_features_from_one_source(
+                batch_size=batch_size, aggregate_func=self.SA_rawpoints,
+                xyz=raw_points[:, 1:4],
+                xyz_features=raw_points[:, 4:].contiguous() if raw_points.shape[1] > 4 else None,
+                xyz_bs_idxs=raw_points[:, 0],
+                new_xyz=new_xyz, new_xyz_batch_cnt=new_xyz_batch_cnt,
+                filter_neighbors_with_roi=self.model_cfg.SA_LAYER['raw_points'].get('FILTER_NEIGHBOR_WITH_ROI', False),
+                radius_of_neighbor=self.model_cfg.SA_LAYER['raw_points'].get('RADIUS_OF_NEIGHBOR_WITH_ROI', None),
+                rois=batch_dict.get('rois', None)
             )
-            point_features_list.append(pooled_features.view(batch_size, num_keypoints, -1))
+            point_features_list.append(pooled_features)
 
         for k, src_name in enumerate(self.SA_layer_names):
             cur_coords = batch_dict['multi_scale_3d_features'][src_name].indices
+            cur_features = batch_dict['multi_scale_3d_features'][src_name].features.contiguous()
+
             xyz = common_utils.get_voxel_centers(
-                cur_coords[:, 1:4],
-                downsample_times=self.downsample_times_map[src_name],
-                voxel_size=self.voxel_size,
-                point_cloud_range=self.point_cloud_range
+                cur_coords[:, 1:4], downsample_times=self.downsample_times_map[src_name],
+                voxel_size=self.voxel_size, point_cloud_range=self.point_cloud_range
             )
-            xyz_batch_cnt = xyz.new_zeros(batch_size).int()
-            for bs_idx in range(batch_size):
-                xyz_batch_cnt[bs_idx] = (cur_coords[:, 0] == bs_idx).sum()
 
-            pooled_points, pooled_features = self.SA_layers[k](
-                xyz=xyz.contiguous(),
-                xyz_batch_cnt=xyz_batch_cnt,
-                new_xyz=new_xyz,
-                new_xyz_batch_cnt=new_xyz_batch_cnt,
-                features=batch_dict['multi_scale_3d_features'][src_name].features.contiguous(),
+            pooled_features = self.aggregate_keypoint_features_from_one_source(
+                batch_size=batch_size, aggregate_func=self.SA_layers[k],
+                xyz=xyz.contiguous(), xyz_features=cur_features, xyz_bs_idxs=cur_coords[:, 0],
+                new_xyz=new_xyz, new_xyz_batch_cnt=new_xyz_batch_cnt,
+                filter_neighbors_with_roi=self.model_cfg.SA_LAYER[src_name].get('FILTER_NEIGHBOR_WITH_ROI', False),
+                radius_of_neighbor=self.model_cfg.SA_LAYER[src_name].get('RADIUS_OF_NEIGHBOR_WITH_ROI', None),
+                rois=batch_dict.get('rois', None)
             )
-            point_features_list.append(pooled_features.view(batch_size, num_keypoints, -1))
 
-        point_features = torch.cat(point_features_list, dim=2)
+            point_features_list.append(pooled_features)
 
-        batch_idx = torch.arange(batch_size, device=keypoints.device).view(-1, 1).repeat(1, keypoints.shape[1]).view(-1)
-        point_coords = torch.cat((batch_idx.view(-1, 1).float(), keypoints.view(-1, 3)), dim=1)
+        point_features = torch.cat(point_features_list, dim=-1)
 
         batch_dict['point_features_before_fusion'] = point_features.view(-1, point_features.shape[-1])
         point_features = self.vsa_point_feature_fusion(point_features.view(-1, point_features.shape[-1]))
 
         # Get context for keypoints via self-attention
-        mid_feat = self.layer_norm1(point_features)
-        mid_feat = mid_feat.view(batch_size, -1, point_features.shape[-1]).permute(0, 2, 1).contiguous()
-        c_point_features = self.self_attn1(mid_feat)
+        c_point_features = self.self_attn1(point_features.view(batch_size, -1, point_features.shape[-1]).permute(0, 2, 1).contiguous())
         c_point_features = self.self_attn2(c_point_features)
-        point_features = point_features + \
-                         self.sa_point_feature_fusion(self.layer_norm2(c_point_features.permute(0, 2, 1).contiguous().view(-1, point_features.shape[-1])))
+        point_features = c_point_features.permute(0, 2, 1).contiguous().view(-1, point_features.shape[-1])
 
         batch_dict['point_features'] = point_features  # (BxN, C)
-        batch_dict['point_coords'] = point_coords  # (BxN, 4)
+        batch_dict['point_coords'] = keypoints  # (BxN, 4)
         return batch_dict
