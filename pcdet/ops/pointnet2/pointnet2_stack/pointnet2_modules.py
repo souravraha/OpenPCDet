@@ -7,19 +7,19 @@ import torch.nn.functional as F
 from . import pointnet2_utils
 
 
-def build_local_aggregation_module(input_channels, config):
+def build_local_aggregation_module(input_channels, config, **kwargs):
     local_aggregation_name = config.get('NAME', 'StackSAModuleMSG')
 
-    if local_aggregation_name == 'StackSAModuleMSG':
+    if 'StackSAModuleMSG' in local_aggregation_name:
         mlps = config.MLPS
         for k in range(len(mlps)):
             mlps[k] = [input_channels] + mlps[k]
-        cur_layer = StackSAModuleMSG(
-            radii=config.POOL_RADIUS, nsamples=config.NSAMPLE, mlps=mlps, use_xyz=True, pool_method='max_pool',
+        cur_layer = globals()[local_aggregation_name](
+            radii=config.POOL_RADIUS, nsamples=config.NSAMPLE, mlps=mlps, use_xyz=True, pool_method='max_pool', **kwargs
         )
         num_c_out = sum([x[-1] for x in mlps])
-    elif local_aggregation_name == 'VectorPoolAggregationModuleMSG':
-        cur_layer = VectorPoolAggregationModuleMSG(input_channels=input_channels, config=config)
+    elif 'VectorPoolAggregationModuleMSG' in local_aggregation_name:
+        cur_layer = globals()[local_aggregation_name](input_channels=input_channels, config=config, **kwargs)
         num_c_out = config.MSG_POST_MLPS[-1]
     else:
         raise NotImplementedError
@@ -28,7 +28,7 @@ def build_local_aggregation_module(input_channels, config):
 
 class StackSAModuleMSG(nn.Module):
     def __init__(self, *, radii: List[float], nsamples: List[int], mlps: List[List[int]],
-                 use_xyz: bool = True, pool_method='max_pool'):
+                 use_xyz: bool = True, pool_method='max_pool', **kwargs):
         """
         Args:
             radii: list of float, list of radii to group with
@@ -417,7 +417,7 @@ class VectorPoolAggregationModule(nn.Module):
 
 
 class VectorPoolAggregationModuleMSG(nn.Module):
-    def __init__(self, input_channels, config):
+    def __init__(self, input_channels, config, **kwargs):
         super().__init__()
         self.model_cfg = config
         self.num_groups = self.model_cfg.NUM_GROUPS
@@ -571,7 +571,7 @@ class StackSAModuleMSGAdapt(nn.Module):
         super().__init__()
 
         assert len(radii) == len(nsamples) == len(mlps)
-        self.pc_range = [0, -40, -3, 70.4, 40, 3]
+        self.pc_range = [-75.2, -75.2, -2, 75.2, 75.2, 4] if pc_range is None else pc_range  #   [0, -40, -3, 70.4, 40, 3]
         self.groupers = nn.ModuleList()
         self.mlps = nn.ModuleList()
         self.adapt_groupers = nn.ModuleList()
@@ -631,11 +631,11 @@ class StackSAModuleMSGAdapt(nn.Module):
             # Learn node offset
             grouped_features = grouped_features.unsqueeze(0).permute(0, 2, 1, 3)
             grouped_xyz = grouped_features[:, :3, :]
-            semantic_trans = self.pred_offset(grouped_features)  # [B, 3, npoint, nsample]
-            node_offset = (semantic_trans * grouped_xyz).mean(dim=-1)  # [B, 3, npoint, 1]
+            semantic_trans = self.pred_offset(grouped_features)  # [1, 3, npoint, nsample]
+            node_offset = (semantic_trans * grouped_xyz).mean(dim=-1)  # [1, 3, npoint, 1]
 
             # Update node and get node feature
-            mod_xyz += node_offset.squeeze(-1).transpose(1, 2).squeeze(0).contiguous()  # (B, npoint, 3)
+            mod_xyz += node_offset.squeeze(-1).transpose(1, 2).squeeze(0).contiguous()  # (npoint, 3)
             mod_xyz_c = mod_xyz.clone()
             mod_xyz_c[:, 0] = torch.clamp(mod_xyz[:, 0], self.pc_range[0], self.pc_range[3])
             mod_xyz_c[:, 1] = torch.clamp(mod_xyz[:, 1], self.pc_range[1], self.pc_range[4])
@@ -744,3 +744,84 @@ class StackSAModuleMSGDecode(nn.Module):
 
         new_features = torch.cat(new_features_list, dim=1)  # (M1 + M2 ..., C)
         return new_features
+
+class VectorPoolAggregationModuleMSGAdapt(nn.Module):
+    def __init__(self, input_channels, config, pc_range=None):
+        super().__init__()
+        self.model_cfg = config
+        self.num_groups = self.model_cfg.NUM_GROUPS
+        self.pc_range = [-75.2, -75.2, -2, 75.2, 75.2, 4] if pc_range is None else pc_range  #   [0, -40, -3, 70.4, 40, 3]
+
+        self.layers = []
+        c_in = 0
+        for k in range(self.num_groups):
+            cur_config = self.model_cfg[f'GROUP_CFG_{k}']
+            cur_adapt_module = VectorPoolAggregationModule(
+                input_channels=input_channels, num_local_voxel=cur_config.NUM_LOCAL_VOXEL,
+                post_mlps=cur_config.POST_MLPS,
+                max_neighbor_distance=cur_config.MAX_NEIGHBOR_DISTANCE,
+                neighbor_nsample=cur_config.NEIGHBOR_NSAMPLE,
+                local_aggregation_type=self.model_cfg.LOCAL_AGGREGATION_TYPE,
+                num_reduced_channels=self.model_cfg.get('NUM_REDUCED_CHANNELS', None),
+                num_channels_of_local_aggregation=self.model_cfg.NUM_CHANNELS_OF_LOCAL_AGGREGATION,
+                neighbor_distance_multiplier=2.0
+            )
+            cur_vector_pool_module = VectorPoolAggregationModule(
+                input_channels=input_channels, num_local_voxel=cur_config.NUM_LOCAL_VOXEL,
+                post_mlps=cur_config.POST_MLPS,
+                max_neighbor_distance=cur_config.MAX_NEIGHBOR_DISTANCE,
+                neighbor_nsample=cur_config.NEIGHBOR_NSAMPLE,
+                local_aggregation_type=self.model_cfg.LOCAL_AGGREGATION_TYPE,
+                num_reduced_channels=self.model_cfg.get('NUM_REDUCED_CHANNELS', None),
+                num_channels_of_local_aggregation=self.model_cfg.NUM_CHANNELS_OF_LOCAL_AGGREGATION,
+                neighbor_distance_multiplier=2.0
+            )
+            self.__setattr__(f'adapt_layer_{k}', cur_adapt_module)
+            self.__setattr__(f'layer_{k}', cur_vector_pool_module)
+            c_in += cur_config.POST_MLPS[-1]
+
+        c_in += 3  # use_xyz
+        self.pred_offset = nn.Sequential(nn.Conv2d(c_in, 3, kernel_size=1, bias=False), nn.Tanh())
+        
+        shared_mlps = []
+        for cur_num_c in self.model_cfg.MSG_POST_MLPS:
+            shared_mlps.extend([
+                nn.Conv1d(c_in, cur_num_c, kernel_size=1, bias=False),
+                nn.BatchNorm1d(cur_num_c),
+                nn.ReLU()
+            ])
+            c_in = cur_num_c
+        self.msg_post_mlps = nn.Sequential(*shared_mlps)
+
+    def forward(self, xyz, xyz_batch_cnt, new_xyz, new_xyz_batch_cnt, features, **kwargs):
+        features_list = []
+        new_xyz_list = []
+        for k in range(self.num_groups):
+            mod_xyz = new_xyz.clone()
+            grouped_xyz, grouped_features = self.__getattr__(f'adapt_layer_{k}')(xyz, xyz_batch_cnt, new_xyz, new_xyz_batch_cnt, features, **kwargs)
+
+            # Learn node offset
+            # grouped_xyz = grouped_features
+            semantic_trans = self.pred_offset(grouped_features)
+            node_offset = (semantic_trans * grouped_xyz).mean(dim=-1)
+
+            # Update node and get features
+            mod_xyz += node_offset
+            mod_xyz_c = mod_xyz.clone()
+            mod_xyz_c[:, 0] = torch.clamp(mod_xyz[:, 0], self.pc_range[0], self.pc_range[3])
+            mod_xyz_c[:, 1] = torch.clamp(mod_xyz[:, 1], self.pc_range[1], self.pc_range[4])
+            mod_xyz_c[:, 2] = torch.clamp(mod_xyz[:, 2], self.pc_range[2], self.pc_range[5])
+            new_xyz_list.append(mod_xyz_c)
+
+            with torch.no_grad():
+                cur_xyz, new_features = self.__getattr__(f'layer_{k}')(xyz, xyz_batch_cnt, mod_xyz, new_xyz_batch_cnt, features, **kwargs)     
+            
+            features_list.append(new_features)
+
+        features = torch.cat(features_list, dim=-1)
+        features = torch.cat((cur_xyz, features), dim=-1)
+        features = features.permute(1, 0)[None, :, :]  # (1, C, N)
+        new_features = self.msg_post_mlps(features)
+        new_features = new_features.squeeze(dim=0).permute(1, 0)  # (N, C)
+
+        return cur_xyz, new_features
