@@ -1,33 +1,8 @@
-CLASS_NAMES: ['Car']
+CLASS_NAMES: ['Vehicle', 'Pedestrian', 'Cyclist']
 
 DATA_CONFIG:
-    _BASE_CONFIG_: cfgs/dataset_configs/kitti_dataset.yaml
-    DATA_AUGMENTOR:
-        DISABLE_AUG_LIST: ['placeholder']
-        AUG_CONFIG_LIST:
-            - NAME: gt_sampling
-              USE_ROAD_PLANE: False
-              DB_INFO_PATH:
-                  - kitti_dbinfos_train.pkl
-              PREPARE: {
-                 filter_by_min_points: ['Car:5', 'Pedestrian:5', 'Cyclist:5'],
-                 filter_by_difficulty: [-1],
-              }
+    _BASE_CONFIG_: cfgs/dataset_configs/waymo_dataset.yaml
 
-              SAMPLE_GROUPS: ['Car:15','Pedestrian:10', 'Cyclist:10']
-              NUM_POINT_FEATURES: 4
-              DATABASE_WITH_FAKELIDAR: False
-              REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
-              LIMIT_WHOLE_SCENE: False
-
-            - NAME: random_world_flip
-              ALONG_AXIS_LIST: ['x']
-
-            - NAME: random_world_rotation
-              WORLD_ROT_ANGLE: [-0.78539816, 0.78539816]
-
-            - NAME: random_world_scaling
-              WORLD_SCALE_RANGE: [0.95, 1.05]
 
 MODEL:
     NAME: PVRCNNPlusPlus
@@ -50,18 +25,31 @@ MODEL:
 
     CFE:
       NAME: VoxelContext3D_dsa
-      downsampled: 8
-      IN_DIM: 64
       NUM_BEV_FEATURES: 64
+      IN_DIM: 64
+      NUM_KEYPOINTS: 4096
+      LOCAL_CONTEXT:
+        MLPS: [ [ 64 ] ]
+        DEFORM_RADIUS: [ 2 ]  
+        POOL_RADIUS: [ 1.6 ]  
+        NSAMPLE: [ 32 ] 
+        POOL_METHOD: max_pool
+      DECODE:
+         MLPS: [ [ 64 ] ]
+         POOL_RADIUS: [ 1 ] 
+         NSAMPLE: [ 16 ]
+         POOL_METHOD: max_pool
+
 
     DECODER_2D:
       NAME: ConcatVoxelDecoder
       CONCAT_WINDOW: 1
       CONCAT_PADDING: 0
       ATTN_DIM: 128
-      NUM_FILTERS: [ 128, 128 ]
+      NUM_FILTERS: [ 128, 128]
       UPSAMPLE_STRIDES: [ 1, 2 ]
       NUM_UPSAMPLE_FILTERS: [ 256, 256 ]
+
 
     DENSE_HEAD:
         NAME: AnchorHeadSingle
@@ -74,20 +62,20 @@ MODEL:
 
         ANCHOR_GENERATOR_CONFIG: [
             {
-                'class_name': 'Car',
-                'anchor_sizes': [[3.9, 1.6, 1.56]],
+                'class_name': 'Vehicle',
+                'anchor_sizes': [[4.7, 2.1, 1.7]],
                 'anchor_rotations': [0, 1.57],
-                'anchor_bottom_heights': [-1.78],
+                'anchor_bottom_heights': [0],
                 'align_center': False,
                 'feature_map_stride': 8,
-                'matched_threshold': 0.6,
-                'unmatched_threshold': 0.45
+                'matched_threshold': 0.55,
+                'unmatched_threshold': 0.4
             },
             {
                 'class_name': 'Pedestrian',
-                'anchor_sizes': [[0.8, 0.6, 1.73]],
+                'anchor_sizes': [[0.91, 0.86, 1.73]],
                 'anchor_rotations': [0, 1.57],
-                'anchor_bottom_heights': [-0.6],
+                'anchor_bottom_heights': [0],
                 'align_center': False,
                 'feature_map_stride': 8,
                 'matched_threshold': 0.5,
@@ -95,9 +83,9 @@ MODEL:
             },
             {
                 'class_name': 'Cyclist',
-                'anchor_sizes': [[1.76, 0.6, 1.73]],
+                'anchor_sizes': [[1.78, 0.84, 1.78]],
                 'anchor_rotations': [0, 1.57],
-                'anchor_bottom_heights': [-0.6],
+                'anchor_bottom_heights': [0],
                 'align_center': False,
                 'feature_map_stride': 8,
                 'matched_threshold': 0.5,
@@ -124,8 +112,8 @@ MODEL:
     PFE:
         NAME: DefVoxelSetAbstraction
         POINT_SOURCE: raw_points
-        NUM_KEYPOINTS: 2048
-        NUM_OUTPUT_FEATURES: 90
+        NUM_KEYPOINTS: 4096
+        NUM_OUTPUT_FEATURES: 96
         SAMPLE_METHOD: SPC
         SPC_SAMPLING:
             NUM_SECTORS: 6
@@ -137,7 +125,7 @@ MODEL:
                 NAME: VectorPoolAggregationModuleMSG
                 NUM_GROUPS: 2
                 LOCAL_AGGREGATION_TYPE: local_interpolation
-                NUM_REDUCED_CHANNELS: 1
+                NUM_REDUCED_CHANNELS: 2
                 NUM_CHANNELS_OF_LOCAL_AGGREGATION: 32
                 MSG_POST_MLPS: [ 32 ]
                 FILTER_NEIGHBOR_WITH_ROI: True
@@ -158,7 +146,7 @@ MODEL:
                 DOWNSAMPLE_FACTOR: 4
                 INPUT_CHANNELS: 64
 
-                NAME: VectorPoolAggregationModuleMSG
+                NAME: VectorPoolAggregationModuleMSGAdapt
                 NUM_GROUPS: 2
                 LOCAL_AGGREGATION_TYPE: local_interpolation
                 NUM_REDUCED_CHANNELS: 32
@@ -182,7 +170,7 @@ MODEL:
                 DOWNSAMPLE_FACTOR: 8
                 INPUT_CHANNELS: 64
 
-                NAME: VectorPoolAggregationModuleMSG
+                NAME: VectorPoolAggregationModuleMSGAdapt
                 NUM_GROUPS: 2
                 LOCAL_AGGREGATION_TYPE: local_interpolation
                 NUM_REDUCED_CHANNELS: 32
@@ -207,7 +195,7 @@ MODEL:
         NAME: PointHeadSimple
         CLS_FC: [256, 256]
         CLASS_AGNOSTIC: True
-        USE_POINT_FEATURES_BEFORE_FUSION: False
+        USE_POINT_FEATURES_BEFORE_FUSION: True
         TARGET_CONFIG:
             GT_EXTRA_WIDTH: [0.2, 0.2, 0.2]
         LOSS_CONFIG:
@@ -239,6 +227,11 @@ MODEL:
                 NMS_POST_MAXSIZE: 100
                 NMS_THRESH: 0.7
                 SCORE_THRESH: 0.1
+
+#                NMS_PRE_MAXSIZE: 4096
+#                NMS_POST_MAXSIZE: 500
+#                NMS_THRESH: 0.85
+
 
         ROI_GRID_POOL:
             GRID_SIZE: 6
@@ -292,23 +285,23 @@ MODEL:
         SCORE_THRESH: 0.1
         OUTPUT_RAW_SCORE: False
 
-        EVAL_METRIC: kitti
+        EVAL_METRIC: waymo
 
         NMS_CONFIG:
             MULTI_CLASSES_NMS: False
             NMS_TYPE: nms_gpu
-            NMS_THRESH: 0.1
+            NMS_THRESH: 0.01
             NMS_PRE_MAXSIZE: 4096
             NMS_POST_MAXSIZE: 500
 
 
 OPTIMIZATION:
-    BATCH_SIZE_PER_GPU: 4
-    NUM_EPOCHS: 80
+    BATCH_SIZE_PER_GPU: 2
+    NUM_EPOCHS: 30
 
     OPTIMIZER: adam_onecycle
-    LR: 0.01
-    WEIGHT_DECAY: 0.001
+    LR: 0.003
+    WEIGHT_DECAY: 0.01
     MOMENTUM: 0.9
 
     MOMS: [0.95, 0.85]
