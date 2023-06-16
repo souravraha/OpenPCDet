@@ -135,6 +135,7 @@ class Detector3DTemplate(nn.Module):
 
     def build_backbone_2d(self, model_info_dict):
         if self.model_cfg.get('BACKBONE_2D', None) is None:
+            print(f"The 2d backbone doesn't exist. Trying to use the Encoder, CFE and Decoder modules.")
             return None, model_info_dict
 
         backbone_2d_module = backbones_2d.__all__[self.model_cfg.BACKBONE_2D.NAME](
